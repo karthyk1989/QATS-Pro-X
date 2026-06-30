@@ -1,1 +1,325 @@
+//@version=6
+//==================================================================================================
+// QATS PRO X
+// Quantum AI Trading Suite
+//
+// Version : 0.1.0
+//
+// Release A
+//
+// Author  : Karthick Raj + OpenAI
+//
+// Description
+// Professional Trading Framework
+//
+// NOTE
+// This is the foundation release.
+// Every future release will build on this file.
+//==================================================================================================
 
+indicator(
+     title="QATS Pro X",
+     shorttitle="QATS",
+     overlay=true,
+     max_labels_count=500,
+     max_lines_count=500,
+     max_boxes_count=500)
+
+//==================================================================================================
+// INPUT GROUPS
+//==================================================================================================
+
+string GROUP_TREND      = "Trend Engine"
+string GROUP_MOMENTUM   = "Momentum"
+string GROUP_VOLATILITY = "Volatility"
+string GROUP_DISPLAY    = "Display"
+
+//==================================================================================================
+// EMA SETTINGS
+//==================================================================================================
+
+emaFastLength  = input.int(9,   "EMA Fast",  minval=1, group=GROUP_TREND)
+emaMidLength   = input.int(21,  "EMA Mid",   minval=1, group=GROUP_TREND)
+emaSlowLength  = input.int(55,  "EMA Slow",  minval=1, group=GROUP_TREND)
+emaMajorLength = input.int(200, "EMA Major", minval=1, group=GROUP_TREND)
+
+//==================================================================================================
+// MOMENTUM SETTINGS
+//==================================================================================================
+
+rsiLength = input.int(14,"RSI Length",group=GROUP_MOMENTUM)
+adxLength = input.int(14,"ADX Length",group=GROUP_MOMENTUM)
+atrLength = input.int(14,"ATR Length",group=GROUP_VOLATILITY)
+
+//==================================================================================================
+// DISPLAY SETTINGS
+//==================================================================================================
+
+showRibbon = input.bool(true,"EMA Ribbon",group=GROUP_DISPLAY)
+showSignals = input.bool(true,"Signals",group=GROUP_DISPLAY)
+
+//==================================================================================================
+// COLORS
+//==================================================================================================
+
+bullColor = color.rgb(0,185,120)
+bearColor = color.rgb(220,70,70)
+neutralColor = color.rgb(160,160,160)
+
+//==================================================================================================
+// UTILITY FUNCTIONS
+//==================================================================================================
+
+// Clamp value
+clamp(float value,float minValue,float maxValue)=>
+    math.max(minValue,math.min(value,maxValue))
+
+// Normalize to 0-100
+normalize(float value,float minValue,float maxValue)=>
+    maxValue-minValue==0?0:100*(value-minValue)/(maxValue-minValue)
+
+// Safe divide
+safeDivide(float a,float b)=>
+    b==0?0:a/b
+
+// EMA slope
+emaSlope(series float ema)=>
+    ema-ema[1]
+//==================================================================================================
+// REUSABLE ENGINES (v0.1.1)
+//==================================================================================================
+
+//---------------------------
+// EMA Engine
+//---------------------------
+emaEngine(series float src, int len) =>
+    ta.ema(src, len)
+
+//---------------------------
+// EMA Strength Engine
+//---------------------------
+emaStrengthEngine(
+     series float emaFast,
+     series float emaMid,
+     series float emaSlow,
+     series float emaMajor)=>
+
+    float score = 0.0
+
+    score += close > emaFast ? 15 : 0
+    score += emaFast > emaMid ? 15 : 0
+    score += emaMid > emaSlow ? 20 : 0
+    score += emaSlow > emaMajor ? 20 : 0
+    score += emaSlope(emaFast) > 0 ? 15 : 0
+    score += emaSlope(emaMid) > 0 ? 15 : 0
+
+    clamp(score,0,100)
+
+//---------------------------
+// ATR Engine
+//---------------------------
+atrEngine(int len)=>
+    ta.atr(len)
+
+//---------------------------
+// Trend Score Engine
+//---------------------------
+trendScoreEngine(
+     float emaScore,
+     float rsiValue,
+     float adxValue,
+     bool majorTrend)=>
+
+    float score = 0
+
+    score += emaScore * 0.40
+    score += normalize(rsiValue,30,70) * 0.20
+    score += normalize(adxValue,10,40) * 0.20
+    score += majorTrend ? 20 : 0
+
+    clamp(score,0,100)
+
+//---------------------------
+// Simple Kalman Filter Engine
+//---------------------------
+kalmanEngine(series float src, float gain)=>
+
+    var float estimate = na
+
+    estimate := na(estimate[1]) ?
+         src :
+         estimate[1] + gain * (src - estimate[1])
+
+    estimate
+
+//==================================================================================================
+// ADAPTIVE SUPERTREND ENGINE
+//==================================================================================================
+
+stAtrLength = input.int(
+     10,
+     "SuperTrend ATR",
+     group=GROUP_TREND)
+
+stFactor =    input.float(
+        3.0,
+        "SuperTrend Factor",
+        step=0.1,
+        group=GROUP_TREND)
+
+kalmanGain =    input.float(
+        0.15,
+        "Kalman Gain",
+        step=0.01,
+        group=GROUP_TREND)
+
+kalmanClose = kalmanEngine(close, kalmanGain)
+
+stATR = ta.atr(stAtrLength)
+
+upperBand =    kalmanClose +    stFactor * stATR
+
+lowerBand =    kalmanClose -    stFactor * stATR
+
+var float superTrend = na
+var bool superBull = true
+
+if na(superTrend)
+    superTrend := lowerBand
+
+if close > superTrend
+    superBull := true
+else if close < superTrend
+    superBull := false
+
+superTrend := superBull ? math.max(lowerBand, nz(superTrend[1], lowerBand)) : math.min(upperBand, nz(superTrend[1], upperBand))
+//==================================================================================================
+// EMA ENGINE
+//==================================================================================================
+
+ema9   = emaEngine(close, emaFastLength)
+ema21  = emaEngine(close, emaMidLength)
+ema55  = emaEngine(close, emaSlowLength)
+ema200 = emaEngine(close, emaMajorLength)
+
+emaBull =
+     ema9 > ema21 and
+     ema21 > ema55 and
+     ema55 > ema200
+
+emaBear =
+     ema9 < ema21 and
+     ema21 < ema55 and
+     ema55 < ema200
+
+emaStrength =
+     emaStrengthEngine(
+         ema9,
+         ema21,
+         ema55,
+         ema200)
+
+//==================================================================================================
+// ATR
+//==================================================================================================
+
+atr = atrEngine(atrLength)
+
+//==================================================================================================
+// RSI
+//==================================================================================================
+
+rsi=ta.rsi(close,rsiLength)
+
+//==================================================================================================
+// ADX
+//==================================================================================================
+
+upMove=high-high[1]
+downMove=low[1]-low
+
+plusDM=(upMove>downMove and upMove>0)?upMove:0
+minusDM=(downMove>upMove and downMove>0)?downMove:0
+
+tr=ta.tr(true)
+
+smoothedTR=ta.rma(tr,adxLength)
+
+plusDI=100*ta.rma(plusDM,adxLength)/smoothedTR
+minusDI=100*ta.rma(minusDM,adxLength)/smoothedTR
+
+dx=100*math.abs(plusDI-minusDI)/math.max(plusDI+minusDI,0.0001)
+
+adx=ta.rma(dx,adxLength)
+
+//==================================================================================================
+// TREND SCORE
+//==================================================================================================
+
+trendScore =    trendScoreEngine(
+        emaStrength,
+        rsi,
+        adx,
+        close > ema200)
+
+//==================================================================================================
+// SIGNALS
+//==================================================================================================
+
+buySignal=
+     ta.crossover(ema9,ema21) and
+     trendScore>=70
+
+sellSignal=
+     ta.crossunder(ema9,ema21) and
+     trendScore<=35
+
+//==================================================================================================
+// PLOTS
+//==================================================================================================
+
+plot(showRibbon?ema9:na,"EMA 9",color=color.aqua,linewidth=2)
+plot(showRibbon?ema21:na,"EMA 21",color=color.yellow,linewidth=2)
+plot(showRibbon?ema55:na,"EMA 55",color=color.orange,linewidth=2)
+plot(showRibbon?ema200:na,"EMA 200",color=color.white,linewidth=2)
+
+bgcolor(
+ trendScore>75?
+ color.new(bullColor,92):
+ trendScore<35?
+ color.new(bearColor,92):
+ na)
+
+plotshape(
+ showSignals and buySignal,
+ style=shape.triangleup,
+ location=location.belowbar,
+ color=bullColor,
+ size=size.small,
+ title="BUY")
+
+plotshape(
+ showSignals and sellSignal,
+ style=shape.triangledown,
+ location=location.abovebar,
+ color=bearColor,
+ size=size.small,
+ title="SELL")
+plot(
+    kalmanClose,
+    "Kalman Filter",
+    color=color.fuchsia,
+    linewidth=2)
+
+plot(
+    superTrend,
+    "Adaptive SuperTrend",
+    color=superBull ? bullColor : bearColor,
+    linewidth=2)
+//==================================================================================================
+// ALERTS
+//==================================================================================================
+
+alertcondition(buySignal,"BUY","QATS BUY")
+
+alertcondition(sellSignal,"SELL","QATS SELL")
